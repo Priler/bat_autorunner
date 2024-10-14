@@ -1,0 +1,18 @@
+[package]
+name = "zapret_autorunner"
+description = "Утилита для автозапуска БАТников через службы"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Abraham Tugalov <priler96@gmail.com>"]
+
+[package.metadata.winresource]
+LegalCopyright = "2024 by Priler"
+OriginalFilename = "zapret_autorunner.exe"
+
+[dependencies]
+crossterm = "0.26"
+winresource = "0.1.17"
+
+[build-dependencies]
+winresource = "0.1.17"
