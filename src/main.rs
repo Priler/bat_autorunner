@@ -22,6 +22,7 @@ fn main() -> crossterm::Result<()> {
     println!("Добро пожаловать!");
     println!("Эта программа позволяет установить .bat файл как службу с автозапуском.");
     println!("Автор программы: Хауди (Абрахам) https://github.com/Priler");
+    println!("Версия: 0.1.1");
     println!("===");
     println!("Используя СТРЕЛКИ на клавиатуре, выберите .bat файл из списка для установки службы 'discordfix_zapret' или выберите 'УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА'.\n");
     println!("Для выбора нажмите ENTER.");
@@ -216,12 +217,13 @@ fn main() -> crossterm::Result<()> {
                                 let create_output = Command::new("powershell")
                                     .arg("-Command")
                                     .arg(format!(
-                                        "Start-Process 'sc.exe' -ArgumentList 'create {} binPath= \"cmd.exe /c {}\" start= auto' -Verb RunAs",
+                                        "Start-Process 'sc.exe' -ArgumentList 'create {} binPath= \"cmd.exe /c \"\"{}\"\"\" start= auto' -Verb RunAs",
                                         service_name,
                                         bat_file_path.display()
                                     ))
                                     .output()
                                     .expect("Не удалось выполнить команду создания службы");
+
 
                                 // Move cursor
                                 message_row += 1;
