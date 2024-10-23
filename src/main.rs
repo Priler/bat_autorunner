@@ -3,6 +3,7 @@ use crossterm::{
     event::{self, Event, KeyCode},
     execute,
     terminal::{self, ClearType},
+    style::{Color, SetForegroundColor, ResetColor},
 };
 use std::{
     env,
@@ -23,6 +24,9 @@ fn main() -> crossterm::Result<()> {
     // Print welcome messages and get the starting line for options
     let current_line = print_welcome_message();
 
+    // Get terminal size
+    let (_, term_height) = terminal::size()?;
+
     // Get the list of .bat files and add the option to remove the service
     let options = get_options();
     if options.is_empty() {
@@ -32,13 +36,24 @@ fn main() -> crossterm::Result<()> {
     }
 
     let mut current_selection = 0;
-    let start_row = current_line; // Start rendering options from this line
+    let start_row = current_line;
+
+    // Calculate maximum visible options
+    let max_visible_options = (term_height - start_row as u16 - 2) as usize; // Leave 2 lines for messages
+    let mut scroll_offset = 0;
 
     // Render the initial list of options
-    render_options(&mut stdout, &options, current_selection, start_row)?;
+    render_options(
+        &mut stdout,
+        &options,
+        current_selection,
+        start_row,
+        scroll_offset,
+        max_visible_options,
+    )?;
 
     // Variable to keep track of where to print messages
-    let mut message_row = start_row + options.len();
+    let mut message_row = start_row + std::cmp::min(options.len(), max_visible_options);
 
     // Variable to track the time of the last key event
     let mut last_event_time = Instant::now();
@@ -54,22 +69,68 @@ fn main() -> crossterm::Result<()> {
                         KeyCode::Up => {
                             if current_selection > 0 {
                                 current_selection -= 1;
+                                // Adjust scroll if selection goes above viewport
+                                if current_selection < scroll_offset {
+                                    scroll_offset = current_selection;
+                                }
                                 render_options(
                                     &mut stdout,
                                     &options,
                                     current_selection,
                                     start_row,
+                                    scroll_offset,
+                                    max_visible_options,
                                 )?;
                             }
                         }
                         KeyCode::Down => {
                             if current_selection < options.len() - 1 {
                                 current_selection += 1;
+                                // Adjust scroll if selection goes below viewport
+                                if current_selection >= scroll_offset + max_visible_options {
+                                    scroll_offset = current_selection - max_visible_options + 1;
+                                }
                                 render_options(
                                     &mut stdout,
                                     &options,
                                     current_selection,
                                     start_row,
+                                    scroll_offset,
+                                    max_visible_options,
+                                )?;
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            if current_selection > 0 {
+                                current_selection = current_selection.saturating_sub(max_visible_options);
+                                scroll_offset = scroll_offset.saturating_sub(max_visible_options);
+                                render_options(
+                                    &mut stdout,
+                                    &options,
+                                    current_selection,
+                                    start_row,
+                                    scroll_offset,
+                                    max_visible_options,
+                                )?;
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            if current_selection < options.len() - 1 {
+                                current_selection = std::cmp::min(
+                                    current_selection + max_visible_options,
+                                    options.len() - 1,
+                                );
+                                scroll_offset = std::cmp::min(
+                                    scroll_offset + max_visible_options,
+                                    options.len().saturating_sub(max_visible_options),
+                                );
+                                render_options(
+                                    &mut stdout,
+                                    &options,
+                                    current_selection,
+                                    start_row,
+                                    scroll_offset,
+                                    max_visible_options,
                                 )?;
                             }
                         }
@@ -83,11 +144,21 @@ fn main() -> crossterm::Result<()> {
                             stdout.flush()?;
 
                             if options[current_selection] == "УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА" {
-                                // Remove the service
-                                message_row =
-                                    handle_service_removal(&mut stdout, message_row)?;
-                            } else {
-                                // Install the selected .bat file as a service
+                                message_row = handle_service_removal(&mut stdout, message_row)?;
+                            } else if options[current_selection] == "ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОИСК)" {
+                                message_row += 1;
+                                execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
+                                match run_powershell_command(
+                                    "Start-Process 'blockcheck.cmd'",
+                                ) {
+                                    Ok(_) => {
+                                        println!("Blockcheck успешно запущен.");
+                                        std::process::exit(0);
+                                    },
+                                    Err(e) => println!("Ошибка при запуске Blockcheck: {}", e),
+                                }
+                            }
+                            else {
                                 let selected_file = &options[current_selection];
                                 message_row = handle_service_installation(
                                     &mut stdout,
@@ -95,8 +166,6 @@ fn main() -> crossterm::Result<()> {
                                     message_row,
                                 )?;
                             }
-
-                            // Break after processing the selection
                             break;
                         }
                         KeyCode::Esc => break,
@@ -108,12 +177,9 @@ fn main() -> crossterm::Result<()> {
         }
     }
 
-    // Cleanup terminal settings and exit
-    // cleanup_terminal()?;
     println!("\nГотово! Вы можете закрыть это окно.");
     println!("Нажмите Enter для выхода.");
 
-    // Wait for user input before closing
     let mut _input = String::new();
     io::stdin()
         .read_line(&mut _input)
@@ -131,14 +197,14 @@ fn print_welcome_message() -> usize {
     current_line += 1;
     println!("Автор программы: Хауди (Абрахам) https://github.com/Priler");
     current_line += 1;
-    println!("Версия: 0.1.1");
+    println!("Версия: {}", env!("CARGO_PKG_VERSION"));
     current_line += 1;
     println!("===");
     current_line += 1;
     println!(
         "Используя СТРЕЛКИ на клавиатуре, выберите .bat файл из списка \
         для установки службы 'discordfix_zapret' или выберите \
-        'УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА'.\n"
+        'УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА' или 'ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОИСК)'.\n"
     );
     current_line += 2; // Account for the extra newline
     println!("Для выбора нажмите ENTER.");
@@ -146,55 +212,149 @@ fn print_welcome_message() -> usize {
     current_line
 }
 
-/// Retrieves a list of .bat files in the current directory and adds the remove service option.
+/// Retrieves a sorted list of .bat files in the current directory and adds the remove service option.
 fn get_options() -> Vec<String> {
     let current_dir = env::current_dir().expect("Не удалось получить текущую директорию");
+    let sub_dir = current_dir.join("pre-configs");
     let mut options: Vec<String> = Vec::new();
 
-    match fs::read_dir(&current_dir) {
-        Ok(read_dir) => {
-            for entry in read_dir {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
+    // Add option to remove service (will always be first)
+    options.push("УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА".to_string());
+
+    // Add option for blockcheck (will always be second)
+    options.push("ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОИСК)".to_string());
+
+    // Collect and sort .bat files
+    if let Ok(read_dir) = fs::read_dir(&sub_dir) {
+        let mut bat_files: Vec<String> = read_dir
+            .filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let path = e.path();
                     if path.extension().and_then(|ext| ext.to_str()) == Some("bat") {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            options.push(name.to_string());
+                        path.file_name().and_then(|n| n.to_str()).map(String::from)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        // Custom sorting for hierarchical file naming
+        bat_files.sort_by(|a, b| {
+            // Helper function to get parts of the filename
+            fn split_filename(name: &str) -> (String, String, String, bool) {
+                let without_ext = name.trim_end_matches(".bat");
+
+                // Split into base name and parentheses part
+                let (main_part, parentheses) = match without_ext.find('(') {
+                    Some(idx) => (&without_ext[..idx - 1], &without_ext[idx..]),
+                    None => (without_ext, ""),
+                };
+
+                // Split main part into components by underscore
+                let parts: Vec<&str> = main_part.split('_').collect();
+                let base = parts[0].to_string();
+
+                // Get variant part (ALT, v2, etc)
+                let variant = parts[1..].join("_");
+
+                // Check if it's a provider variant
+                let has_provider = !parentheses.is_empty();
+
+                (base, variant, parentheses.to_string(), has_provider)
+            }
+
+            let (a_base, a_variant, a_provider, a_has_provider) = split_filename(a);
+            let (b_base, b_variant, b_provider, b_has_provider) = split_filename(b);
+
+            // First compare by base name
+            match a_base.cmp(&b_base) {
+                std::cmp::Ordering::Equal => {
+                    // Same base name, compare variants
+                    match a_variant.cmp(&b_variant) {
+                        std::cmp::Ordering::Equal => {
+                            // Same variant, non-provider version comes first
+                            match (a_has_provider, b_has_provider) {
+                                (false, true) => std::cmp::Ordering::Less,
+                                (true, false) => std::cmp::Ordering::Greater,
+                                // Both have or don't have providers, sort by provider name
+                                _ => a_provider.cmp(&b_provider)
+                            }
                         }
+                        // Different variants
+                        other => other
                     }
                 }
+                // Different base names
+                other => other
             }
-        }
-        Err(_) => {
-            // Handle the error (e.g., log it or ignore it)
-            // In this case, we simply return an empty options vector
-        }
-    }
+        });
 
-    // Add option to remove service
-    options.push("УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА".to_string());
+        // Add sorted files to options
+        options.extend(bat_files);
+    }
 
     options
 }
 
-/// Renders the list of options to the terminal.
+/// Renders the list of options to the terminal with scrolling support.
 fn render_options(
     stdout: &mut impl Write,
     options: &[String],
     current_selection: usize,
     start_row: usize,
+    scroll_offset: usize,
+    max_visible_options: usize,
 ) -> crossterm::Result<()> {
+    // Clear the options area
     execute!(
         stdout,
         cursor::MoveTo(0, start_row as u16),
         terminal::Clear(ClearType::FromCursorDown)
     )?;
+
+    let mut current_row = start_row;
+
+    // Display scroll indicator if there are options above
+    if scroll_offset > 0 {
+        execute!(
+            stdout,
+            cursor::MoveTo(0, current_row as u16),
+            SetForegroundColor(Color::DarkGrey),
+        )?;
+        write!(stdout, "↑ Еще опции выше")?;
+        execute!(stdout, ResetColor)?;
+        current_row += 1;
+    }
+
+    // Calculate the visible range
+    let end_index = std::cmp::min(scroll_offset + max_visible_options, options.len());
+    let visible_range = scroll_offset..end_index;
+
+    // Display visible options
     for (i, option) in options.iter().enumerate() {
-        if i == current_selection {
-            println!("> {}", option);
-        } else {
-            println!("  {}", option);
+        if visible_range.contains(&i) {
+            execute!(stdout, cursor::MoveTo(0, current_row as u16))?;
+            if i == current_selection {
+                write!(stdout, "> {}", option)?;
+            } else {
+                write!(stdout, "  {}", option)?;
+            }
+            current_row += 1;
         }
     }
+
+    // Display scroll indicator if there are options below
+    if end_index < options.len() {
+        execute!(
+            stdout,
+            cursor::MoveTo(0, current_row as u16),
+            SetForegroundColor(Color::DarkGrey),
+        )?;
+        write!(stdout, "↓ Еще опции ниже")?;
+        execute!(stdout, ResetColor)?;
+    }
+
     stdout.flush()?;
     Ok(())
 }
@@ -259,7 +419,8 @@ fn handle_service_installation(
     stdout.flush()?;
 
     let current_dir = env::current_dir().expect("Не удалось получить текущую директорию");
-    let bat_file_path = current_dir.join(selected_file);
+    let sub_dir = current_dir.join("pre-configs");
+    let bat_file_path = sub_dir.join(selected_file);
     let service_name = "discordfix_zapret";
 
     // Create the service
