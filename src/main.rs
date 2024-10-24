@@ -1,10 +1,3 @@
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{self, ClearType},
-    style::{Color, SetForegroundColor, ResetColor},
-};
 use std::{
     env,
     fs,
@@ -13,21 +6,40 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn main() -> crossterm::Result<()> {
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode},
+    execute,
+    style::{Color, Print, ResetColor, SetForegroundColor},
+    terminal::{self, Clear, ClearType},
+};
+
+fn main() -> io::Result<()> {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = cleanup_terminal();
+        original_hook(panic_info);
+    }));
+
     let mut stdout = stdout();
-    execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
+
+    // Ensure clean terminal state
     terminal::enable_raw_mode()?;
+    execute!(
+        stdout,
+        terminal::EnterAlternateScreen,
+        cursor::Hide,
+        Clear(ClearType::All),
+        cursor::MoveTo(0, 0)
+    )?;
 
-    // Clear the screen
-    execute!(stdout, terminal::Clear(ClearType::All))?;
-
-    // Print welcome messages and get the starting line for options
-    let current_line = print_welcome_message();
-
-    // Get terminal size
+    // Get terminal size early
     let (_, term_height) = terminal::size()?;
 
-    // Get the list of .bat files and add the option to remove the service
+    // Print welcome messages and get the starting line
+    let current_line = print_welcome_message();
+
+    // Get the list of .bat files and add options
     let options = get_options();
     if options.is_empty() {
         println!("Не найдено ни одного .bat файла в текущей директории.");
@@ -38,11 +50,16 @@ fn main() -> crossterm::Result<()> {
     let mut current_selection = 0;
     let start_row = current_line;
 
-    // Calculate maximum visible options
-    let max_visible_options = (term_height - start_row as u16 - 2) as usize; // Leave 2 lines for messages
+    // Calculate maximum visible options, reserving space for UI elements
+    // Calculate maximum visible options, limiting to 10
+    let max_visible_options = std::cmp::min(
+        15,
+        (term_height - start_row as u16 - 3) as usize
+    );
+
     let mut scroll_offset = 0;
 
-    // Render the initial list of options
+    // Initial render
     render_options(
         &mut stdout,
         &options,
@@ -53,23 +70,21 @@ fn main() -> crossterm::Result<()> {
     )?;
 
     // Variable to keep track of where to print messages
-    let mut message_row = start_row + std::cmp::min(options.len(), max_visible_options);
+    let mut message_row = start_row + std::cmp::min(options.len(), max_visible_options) + 1;
 
     // Variable to track the time of the last key event
     let mut last_event_time = Instant::now();
 
-    // Main event loop for user interaction
+    // Main event loop
     loop {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(event) = event::read()? {
                 let now = Instant::now();
-                // Delay to prevent rapid key repeat
                 if now.duration_since(last_event_time) > Duration::from_millis(150) {
                     match event.code {
                         KeyCode::Up => {
                             if current_selection > 0 {
                                 current_selection -= 1;
-                                // Adjust scroll if selection goes above viewport
                                 if current_selection < scroll_offset {
                                     scroll_offset = current_selection;
                                 }
@@ -86,9 +101,9 @@ fn main() -> crossterm::Result<()> {
                         KeyCode::Down => {
                             if current_selection < options.len() - 1 {
                                 current_selection += 1;
-                                // Adjust scroll if selection goes below viewport
-                                if current_selection >= scroll_offset + max_visible_options {
-                                    scroll_offset = current_selection - max_visible_options + 1;
+                                let visible_options = max_visible_options.saturating_sub(2);
+                                if current_selection >= scroll_offset + visible_options {
+                                    scroll_offset = current_selection.saturating_sub(visible_options - 1);
                                 }
                                 render_options(
                                     &mut stdout,
@@ -101,64 +116,55 @@ fn main() -> crossterm::Result<()> {
                             }
                         }
                         KeyCode::PageUp => {
-                            if current_selection > 0 {
-                                current_selection = current_selection.saturating_sub(max_visible_options);
-                                scroll_offset = scroll_offset.saturating_sub(max_visible_options);
-                                render_options(
-                                    &mut stdout,
-                                    &options,
-                                    current_selection,
-                                    start_row,
-                                    scroll_offset,
-                                    max_visible_options,
-                                )?;
-                            }
+                            let visible_options = max_visible_options.saturating_sub(2);
+                            current_selection = current_selection.saturating_sub(visible_options);
+                            scroll_offset = scroll_offset.saturating_sub(visible_options);
+                            render_options(
+                                &mut stdout,
+                                &options,
+                                current_selection,
+                                start_row,
+                                scroll_offset,
+                                max_visible_options,
+                            )?;
                         }
                         KeyCode::PageDown => {
-                            if current_selection < options.len() - 1 {
-                                current_selection = std::cmp::min(
-                                    current_selection + max_visible_options,
-                                    options.len() - 1,
-                                );
-                                scroll_offset = std::cmp::min(
-                                    scroll_offset + max_visible_options,
-                                    options.len().saturating_sub(max_visible_options),
-                                );
-                                render_options(
-                                    &mut stdout,
-                                    &options,
-                                    current_selection,
-                                    start_row,
-                                    scroll_offset,
-                                    max_visible_options,
-                                )?;
-                            }
+                            let visible_options = max_visible_options.saturating_sub(2);
+                            current_selection = (current_selection + visible_options).min(options.len() - 1);
+                            scroll_offset = (scroll_offset + visible_options).min(
+                                options.len().saturating_sub(visible_options)
+                            );
+                            render_options(
+                                &mut stdout,
+                                &options,
+                                current_selection,
+                                start_row,
+                                scroll_offset,
+                                max_visible_options,
+                            )?;
                         }
                         KeyCode::Enter => {
                             // Clear messages below the options
                             execute!(
                                 stdout,
                                 cursor::MoveTo(0, message_row as u16),
-                                terminal::Clear(ClearType::FromCursorDown)
+                                Clear(ClearType::FromCursorDown)
                             )?;
                             stdout.flush()?;
 
                             if options[current_selection] == "УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА" {
                                 message_row = handle_service_removal(&mut stdout, message_row)?;
-                            } else if options[current_selection] == "ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОИСК)" {
+                            } else if options[current_selection] == "ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОДБОР-ПАРАМЕТРОВ-БАТНИКА)" {
                                 message_row += 1;
                                 execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
-                                match run_powershell_command(
-                                    "Start-Process 'blockcheck.cmd'",
-                                ) {
+                                match run_powershell_command("Start-Process 'blockcheck.cmd'") {
                                     Ok(_) => {
                                         println!("Blockcheck успешно запущен.");
                                         std::process::exit(0);
                                     },
                                     Err(e) => println!("Ошибка при запуске Blockcheck: {}", e),
                                 }
-                            }
-                            else {
+                            } else {
                                 let selected_file = &options[current_selection];
                                 message_row = handle_service_installation(
                                     &mut stdout,
@@ -177,13 +183,20 @@ fn main() -> crossterm::Result<()> {
         }
     }
 
-    println!("\nГотово! Вы можете закрыть это окно.");
-    println!("Нажмите Enter для выхода.");
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16 + 2),
+        Clear(ClearType::FromCursorDown)
+    )?;
 
-    let mut _input = String::new();
-    io::stdin()
-        .read_line(&mut _input)
-        .expect("Ошибка при ожидании ввода.");
+    // Clean up terminal before final messages
+    cleanup_terminal()?;
+
+    println!("\nГотово!\nВы можете закрыть это окно.");
+
+    // Wait for Enter key in normal terminal mode
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
 
     Ok(())
 }
@@ -204,7 +217,7 @@ fn print_welcome_message() -> usize {
     println!(
         "Используя СТРЕЛКИ на клавиатуре, выберите .bat файл из списка \
         для установки службы 'discordfix_zapret' или выберите \
-        'УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА' или 'ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОИСК)'.\n"
+        'УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА' или 'ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОДБОР-ПАРАМЕТРОВ-БАТНИКА)'.\n"
     );
     current_line += 2; // Account for the extra newline
     println!("Для выбора нажмите ENTER.");
@@ -222,7 +235,7 @@ fn get_options() -> Vec<String> {
     options.push("УДАЛИТЬ СЛУЖБУ С АВТОЗАПУСКА".to_string());
 
     // Add option for blockcheck (will always be second)
-    options.push("ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОИСК)".to_string());
+    options.push("ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОДБОР-ПАРАМЕТРОВ-БАТНИКА)".to_string());
 
     // Collect and sort .bat files
     if let Ok(read_dir) = fs::read_dir(&sub_dir) {
@@ -305,56 +318,101 @@ fn render_options(
     start_row: usize,
     scroll_offset: usize,
     max_visible_options: usize,
-) -> crossterm::Result<()> {
-    // Clear the options area
+) -> io::Result<()> {
+    // Limit visible options to 10 (8 options + 2 scroll indicators)
+    let max_display_options = 15;
+    let visible_options = std::cmp::min(max_display_options - 2, max_visible_options.saturating_sub(2));
+    let total_options = options.len();
+
+    // Adjust scroll_offset to keep selection visible within the 10-item window
+    let adjusted_scroll_offset = if current_selection >= scroll_offset + visible_options {
+        current_selection.saturating_sub(visible_options - 1)
+    } else if current_selection < scroll_offset {
+        current_selection
+    } else {
+        scroll_offset
+    };
+
+    // Calculate the visible range
+    let end_index = (adjusted_scroll_offset + visible_options).min(total_options);
+    let visible_range = adjusted_scroll_offset..end_index;
+
+    // Constants for formatting
+    const MARKER: &str = "►";
+    const EMPTY_MARKER: &str = " ";
+    const SPACING: &str = " ";
+
+    // Clear the entire options area first
     execute!(
         stdout,
         cursor::MoveTo(0, start_row as u16),
-        terminal::Clear(ClearType::FromCursorDown)
+        Clear(ClearType::FromCursorDown)
     )?;
 
     let mut current_row = start_row;
 
-    // Display scroll indicator if there are options above
-    if scroll_offset > 0 {
+    // Up scroll indicator (if we're not at the top)
+    if adjusted_scroll_offset > 0 {
         execute!(
             stdout,
             cursor::MoveTo(0, current_row as u16),
+            Clear(ClearType::CurrentLine),
             SetForegroundColor(Color::DarkGrey),
+            Print("↑ Еще опции выше"),
+            ResetColor
         )?;
-        write!(stdout, "↑ Еще опции выше")?;
-        execute!(stdout, ResetColor)?;
         current_row += 1;
     }
 
-    // Calculate the visible range
-    let end_index = std::cmp::min(scroll_offset + max_visible_options, options.len());
-    let visible_range = scroll_offset..end_index;
+    // Display visible options (limited to our window size)
+    let displayed_count = 0;
+    for (index, option) in options.iter().enumerate() {
+        if visible_range.contains(&index) && displayed_count < visible_options {
+            // Position cursor at start of line
+            execute!(
+                stdout,
+                cursor::MoveTo(0, current_row as u16),
+                Clear(ClearType::CurrentLine)
+            )?;
 
-    // Display visible options
-    for (i, option) in options.iter().enumerate() {
-        if visible_range.contains(&i) {
-            execute!(stdout, cursor::MoveTo(0, current_row as u16))?;
-            if i == current_selection {
-                write!(stdout, "> {}", option)?;
+            if index == current_selection {
+                // Selected item - print marker and highlighted text
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::Cyan),
+                    Print(MARKER),
+                    Print(SPACING),
+                    Print(option),
+                    ResetColor
+                )?;
             } else {
-                write!(stdout, "  {}", option)?;
+                // Unselected item - print empty marker and normal text
+                execute!(
+                    stdout,
+                    Print(EMPTY_MARKER),
+                    Print(SPACING),
+                    Print(option)
+                )?;
             }
+
+            stdout.flush()?;
             current_row += 1;
         }
     }
 
-    // Display scroll indicator if there are options below
-    if end_index < options.len() {
+    // Down scroll indicator (if we're not at the bottom)
+    if end_index < total_options {
         execute!(
             stdout,
             cursor::MoveTo(0, current_row as u16),
+            Clear(ClearType::CurrentLine),
             SetForegroundColor(Color::DarkGrey),
+            Print("↓ Еще опции ниже"),
+            ResetColor
         )?;
-        write!(stdout, "↓ Еще опции ниже")?;
-        execute!(stdout, ResetColor)?;
     }
 
+    // Final flush to ensure everything is rendered
     stdout.flush()?;
     Ok(())
 }
@@ -363,43 +421,122 @@ fn render_options(
 fn handle_service_removal(
     stdout: &mut impl Write,
     mut message_row: usize,
-) -> crossterm::Result<usize> {
-    println!("Остановка и удаление службы 'discordfix_zapret'...");
+) -> io::Result<usize> {
+    // Initial message
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::FromCursorDown),
+        Print("=== Удаление существующей службы ===")
+    )?;
+    message_row += 1;
+    stdout.flush()?;
+
+    // Stop service message
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print("► Остановка службы 'discordfix_zapret'...")
+    )?;
     stdout.flush()?;
 
     // Stop the service
-    message_row += 1;
-    execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
     match run_powershell_command(
         "Start-Process 'sc.exe' -ArgumentList 'stop discordfix_zapret' -Verb RunAs",
     ) {
-        Ok(_) => println!("Служба 'discordfix_zapret' успешно остановлена."),
-        Err(e) => println!("Ошибка при остановке службы: {}", e),
+        Ok(_) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print("✓ Служба 'discordfix_zapret' успешно остановлена.")
+            )?;
+        },
+        Err(e) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print(format!("⚠ Ошибка при остановке службы: {}", e))
+            )?;
+        }
     }
-
-    // Terminate the 'winws.exe' process
-    message_row += 1;
-    execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
-    println!("Завершение процесса 'winws.exe'...");
     stdout.flush()?;
+
+    // Terminate process message
+    message_row += 1;
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print("► Завершение процесса 'winws.exe'...")
+    )?;
+    stdout.flush()?;
+
+    // Terminate process
     match run_powershell_command(
         "Start-Process 'powershell' -ArgumentList 'Stop-Process -Name \"winws\" -Force' -Verb RunAs",
     ) {
-        Ok(_) => println!("Процесс 'winws.exe' успешно завершён."),
-        Err(e) => println!("Ошибка при завершении процесса 'winws.exe': {}", e),
+        Ok(_) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print("✓ Процесс 'winws.exe' успешно завершён.")
+            )?;
+        },
+        Err(e) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print(format!("⚠ Ошибка при завершении процесса 'winws.exe': {}", e))
+            )?;
+        }
     }
+    stdout.flush()?;
+
+    // Delete service message
+    message_row += 1;
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print("► Удаление службы 'discordfix_zapret'...")
+    )?;
+    stdout.flush()?;
 
     // Delete the service
-    message_row += 1;
-    execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
     match run_powershell_command(
         "Start-Process 'sc.exe' -ArgumentList 'delete discordfix_zapret' -Verb RunAs",
     ) {
-        Ok(_) => println!("Служба 'discordfix_zapret' успешно удалена."),
-        Err(e) => println!("Ошибка при удалении службы: {}", e),
+        Ok(_) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print("✓ Служба 'discordfix_zapret' успешно удалена.")
+            )?;
+        },
+        Err(e) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print(format!("⚠ Ошибка при удалении службы: {}", e))
+            )?;
+        }
     }
-
     stdout.flush()?;
+
+    message_row += 1;
     Ok(message_row)
 }
 
@@ -408,14 +545,26 @@ fn handle_service_installation(
     stdout: &mut impl Write,
     selected_file: &str,
     mut message_row: usize,
-) -> crossterm::Result<usize> {
-    // Stop and remove any existing service
+) -> io::Result<usize> {
+    // First remove any existing service
     message_row = handle_service_removal(stdout, message_row)?;
 
-    // Install the selected .bat file as a service
+    // Add spacing after removal messages
     message_row += 1;
-    execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
-    println!("\nУстановка файла как службы: {}", selected_file);
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print("=== Установка новой службы ===")
+    )?;
+    message_row += 1;
+
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print(format!("► Установка файла как службы: {}", selected_file))
+    )?;
     stdout.flush()?;
 
     let current_dir = env::current_dir().expect("Не удалось получить текущую директорию");
@@ -423,52 +572,152 @@ fn handle_service_installation(
     let bat_file_path = sub_dir.join(selected_file);
     let service_name = "discordfix_zapret";
 
-    // Create the service
-    message_row += 2;
-    execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
+    // Create service
+    message_row += 1;
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print("► Создание службы...")
+    )?;
+    stdout.flush()?;
+
     let create_command = format!(
         "Start-Process 'sc.exe' -ArgumentList 'create {} binPath= \"cmd.exe /c \"\"{}\"\"\" start= auto' -Verb RunAs",
         service_name,
         bat_file_path.display()
     );
+
     match run_powershell_command(&create_command) {
-        Ok(_) => println!("Служба успешно установлена."),
-        Err(e) => println!("Ошибка при установке службы: {}", e),
+        Ok(_) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print("✓ Служба успешно установлена.")
+            )?;
+        },
+        Err(e) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print(format!("⚠ Ошибка при установке службы: {}", e))
+            )?;
+        }
     }
 
-    // Start the service
+    // Start service
     message_row += 1;
-    execute!(stdout, cursor::MoveTo(0, message_row as u16))?;
+    execute!(
+        stdout,
+        cursor::MoveTo(0, message_row as u16),
+        Clear(ClearType::CurrentLine),
+        Print("► Запуск службы...")
+    )?;
+    stdout.flush()?;
+
     let start_command = format!(
         "Start-Process 'sc.exe' -ArgumentList 'start {}' -Verb RunAs",
         service_name
     );
+
     match run_powershell_command(&start_command) {
-        Ok(_) => println!("Служба успешно запущена."),
-        Err(e) => println!("Ошибка при запуске службы: {}", e),
+        Ok(_) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print("✓ Служба успешно запущена.")
+            )?;
+        },
+        Err(e) => {
+            message_row += 1;
+            execute!(
+                stdout,
+                cursor::MoveTo(0, message_row as u16),
+                Clear(ClearType::CurrentLine),
+                Print(format!("⚠ Ошибка при запуске службы: {}", e))
+            )?;
+        }
     }
 
+    message_row += 1;
     stdout.flush()?;
     Ok(message_row)
 }
 
 /// Runs a PowerShell command and captures its output.
-fn run_powershell_command(command: &str) -> Result<(), String> {
+fn run_powershell_command(command: &str) -> io::Result<()> {
     let output = Command::new("powershell")
         .args(&["-Command", command])
         .output()
-        .map_err(|e| format!("Не удалось выполнить команду: {}", e))?;
+        .map_err(|e| io::Error::new(
+            io::ErrorKind::Other,
+            format!("Не удалось выполнить команду: {}", e)
+        ))?;
 
     if output.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        // Convert stderr to string, handle invalid UTF-8 gracefully
+        let error_message = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        // If error message is empty, try to get anything from stdout
+        let error_message = if error_message.is_empty() {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        } else {
+            error_message
+        };
+
+        // If both stderr and stdout are empty, provide a generic error message
+        let error_message = if error_message.is_empty() {
+            "Неизвестная ошибка при выполнении команды PowerShell".to_string()
+        } else {
+            error_message
+        };
+
+        Err(io::Error::new(io::ErrorKind::Other, error_message))
     }
 }
 
-/// Cleans up the terminal by disabling raw mode and restoring cursor visibility.
-fn cleanup_terminal() -> crossterm::Result<()> {
+// Enhanced cleanup function
+fn cleanup_terminal() -> io::Result<()> {
+    let mut stdout = stdout();
     terminal::disable_raw_mode()?;
-    execute!(stdout(), terminal::LeaveAlternateScreen, cursor::Show)?;
+    execute!(
+        stdout,
+        Clear(ClearType::All),
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+// Add this helper function to ensure proper terminal cleanup on exit
+fn setup_terminal_cleanup() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = cleanup_terminal();
+        original_hook(panic_info);
+    }));
+
+    ctrlc::set_handler(move || {
+        let _ = cleanup_terminal();
+        std::process::exit(0);
+    }).expect("Error setting Ctrl-C handler");
+}
+
+fn clear_screen(stdout: &mut impl Write) -> io::Result<()> {
+    execute!(
+        stdout,
+        Clear(ClearType::All),
+        cursor::MoveTo(0, 0)
+    )?;
+    stdout.flush()?;
     Ok(())
 }
