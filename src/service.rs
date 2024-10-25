@@ -3,7 +3,6 @@ use crossterm::{
     cursor,
     execute,
     style::{Print, SetForegroundColor, Color, ResetColor},
-    terminal::{Clear, ClearType},
 };
 use crate::utils::run_powershell_command;
 
@@ -19,23 +18,18 @@ impl ServiceManager {
     }
 
     pub fn remove_service(&self, stdout: &mut impl Write, mut message_row: usize) -> io::Result<usize> {
-        // Initial message
+        // Section header
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Clear(ClearType::FromCursorDown),
-            Print("=== Удаление существующей службы ===")
+            Print("\n=== Удаление существующей службы ===\n\n")
         )?;
-        message_row += 1;
+        message_row += 3; // Account for the header and two newlines
         stdout.flush()?;
 
-        // Stop service
+        // Process each operation
         message_row = self.stop_service(stdout, message_row)?;
-
-        // Terminate process
         message_row = self.terminate_process(stdout, message_row)?;
-
-        // Delete service
         message_row = self.delete_service(stdout, message_row)?;
 
         Ok(message_row)
@@ -50,22 +44,20 @@ impl ServiceManager {
         // First remove existing service
         message_row = self.remove_service(stdout, message_row)?;
 
-        // Add spacing after removal messages
-        message_row += 1;
+        // Add spacing and section header for installation
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Clear(ClearType::CurrentLine),
-            Print("=== Установка новой службы ===")
+            Print("\n=== Установка новой службы ===\n\n")
         )?;
-        message_row += 1;
+        message_row += 3;
 
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Clear(ClearType::CurrentLine),
-            Print(format!("► Установка файла как службы: {}", bat_file_path))
+            Print(format!("► Установка файла как службы: {}\n", bat_file_path))
         )?;
+        message_row += 1;
         stdout.flush()?;
 
         // Create and start service
@@ -79,8 +71,10 @@ impl ServiceManager {
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Print(format!("► Остановка службы '{}'...", self.service_name))
+            Print(format!("► Остановка службы '{}'...\n", self.service_name))
         )?;
+        message_row += 1;
+        stdout.flush()?;
 
         let command = format!(
             "Start-Process 'sc.exe' -ArgumentList 'stop {}' -Verb RunAs",
@@ -89,72 +83,74 @@ impl ServiceManager {
 
         match run_powershell_command(&command) {
             Ok(_) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Green),
-                    Print(format!("✓ Служба '{}' успешно остановлена.", self.service_name)),
+                    Print(format!("✓ Служба '{}' успешно остановлена.\n", self.service_name)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             },
             Err(e) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Red),
-                    Print(format!("⚠ Ошибка при остановке службы: {}", e)),
+                    Print(format!("⚠ Ошибка при остановке службы: {}\n", e)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             }
         }
 
-        Ok(message_row + 1)
+        Ok(message_row)
     }
 
     fn terminate_process(&self, stdout: &mut impl Write, mut message_row: usize) -> io::Result<usize> {
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Print("► Завершение процесса 'winws.exe'...")
+            Print("► Завершение процесса 'winws.exe'...\n")
         )?;
+        message_row += 1;
         stdout.flush()?;
 
         let command = "Start-Process 'powershell' -ArgumentList 'Stop-Process -Name \"winws\" -Force' -Verb RunAs";
 
         match run_powershell_command(command) {
             Ok(_) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Green),
-                    Print("✓ Процесс 'winws.exe' успешно завершён."),
+                    Print("✓ Процесс 'winws.exe' успешно завершён.\n"),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             },
             Err(e) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Red),
-                    Print(format!("⚠ Ошибка при завершении процесса 'winws.exe': {}", e)),
+                    Print(format!("⚠ Ошибка при завершении процесса 'winws.exe': {}\n", e)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             }
         }
 
-        Ok(message_row + 1)
+        Ok(message_row)
     }
 
     fn delete_service(&self, stdout: &mut impl Write, mut message_row: usize) -> io::Result<usize> {
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Print(format!("► Удаление службы '{}'...", self.service_name))
+            Print(format!("► Удаление службы '{}'...\n", self.service_name))
         )?;
+        message_row += 1;
         stdout.flush()?;
 
         let command = format!(
@@ -164,36 +160,37 @@ impl ServiceManager {
 
         match run_powershell_command(&command) {
             Ok(_) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Green),
-                    Print(format!("✓ Служба '{}' успешно удалена.", self.service_name)),
+                    Print(format!("✓ Служба '{}' успешно удалена.\n", self.service_name)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             },
             Err(e) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Red),
-                    Print(format!("⚠ Ошибка при удалении службы: {}", e)),
+                    Print(format!("⚠ Ошибка при удалении службы: {}\n", e)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             }
         }
 
-        Ok(message_row + 1)
+        Ok(message_row)
     }
 
     fn create_service(&self, stdout: &mut impl Write, bat_file_path: &str, mut message_row: usize) -> io::Result<usize> {
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Print("► Создание службы...")
+            Print("► Создание службы...\n")
         )?;
+        message_row += 1;
         stdout.flush()?;
 
         let command = format!(
@@ -204,36 +201,37 @@ impl ServiceManager {
 
         match run_powershell_command(&command) {
             Ok(_) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Green),
-                    Print("✓ Служба успешно установлена."),
+                    Print("✓ Служба успешно установлена.\n"),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             },
             Err(e) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Red),
-                    Print(format!("⚠ Ошибка при установке службы: {}", e)),
+                    Print(format!("⚠ Ошибка при установке службы: {}\n", e)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             }
         }
 
-        Ok(message_row + 1)
+        Ok(message_row)
     }
 
     fn start_service(&self, stdout: &mut impl Write, mut message_row: usize) -> io::Result<usize> {
         execute!(
             stdout,
             cursor::MoveTo(0, message_row as u16),
-            Print("► Запуск службы...")
+            Print("► Запуск службы...\n")
         )?;
+        message_row += 1;
         stdout.flush()?;
 
         let command = format!(
@@ -243,27 +241,27 @@ impl ServiceManager {
 
         match run_powershell_command(&command) {
             Ok(_) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Green),
-                    Print("✓ Служба успешно запущена."),
+                    Print("✓ Служба успешно запущена.\n"),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             },
             Err(e) => {
-                message_row += 1;
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
                     SetForegroundColor(Color::Red),
-                    Print(format!("⚠ Ошибка при запуске службы: {}", e)),
+                    Print(format!("⚠ Ошибка при запуске службы: {}\n", e)),
                     ResetColor
                 )?;
+                message_row += 2; // Add extra line for spacing
             }
         }
 
-        Ok(message_row + 1)
+        Ok(message_row)
     }
 }

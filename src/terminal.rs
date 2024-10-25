@@ -48,12 +48,12 @@ pub fn setup_terminal_cleanup() {
 }
 
 pub fn cleanup_and_exit(stdout: &mut impl Write) -> io::Result<()> {
-    execute!(
-        stdout,
-        cursor::MoveTo(0, 0),
-        Clear(ClearType::All)
-    )?;
-    cleanup_terminal()?;
+    //execute!(
+    //    stdout,
+    //    cursor::MoveTo(0, 0),
+    //    Clear(ClearType::All)
+    //)?;
+    // cleanup_terminal()?;
     println!("\nГотово!\nВы можете закрыть это окно.");
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
