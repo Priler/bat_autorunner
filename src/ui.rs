@@ -7,7 +7,7 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 use crate::service::ServiceManager;
-use crate::utils::run_powershell_command;
+use crate::utils::run_powershell_command_with_output;
 
 #[derive(Debug)]
 pub enum KeyAction {
@@ -189,7 +189,7 @@ pub fn handle_selection(
             service_manager.remove_service(stdout, message_row)?;
         }
         "ЗАПУСТИТЬ BLOCKCHECK (АВТО-ПОДБОР-ПАРАМЕТРОВ-БАТНИКА)" => {
-            match run_powershell_command("Start-Process 'blockcheck.cmd'") {
+            match run_powershell_command_with_output("Start-Process 'blockcheck.cmd'") {
                 Ok(_) => {
                     execute!(
                         stdout,

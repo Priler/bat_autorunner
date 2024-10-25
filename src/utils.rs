@@ -79,6 +79,38 @@ fn split_filename(name: &str) -> (String, String, String, bool) {
     (base, variant, parentheses.to_string(), has_provider)
 }
 
+pub fn run_powershell_command_with_output(command: &str) -> io::Result<String> {
+    println!("{}", command);
+    let output = Command::new("powershell")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", command])
+        .output()
+        .map_err(|e| io::Error::new(
+            io::ErrorKind::Other,
+            format!("Не удалось выполнить команду: {}", e)
+        ))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        if !stderr.is_empty() {
+            Err(io::Error::new(io::ErrorKind::Other, stderr))
+        } else {
+            Ok(stdout)
+        }
+    } else {
+        let error_message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "Unknown error occurred while executing PowerShell command".to_string()
+        };
+
+        Err(io::Error::new(io::ErrorKind::Other, error_message))
+    }
+}
+
 pub fn run_powershell_command(command: &str) -> io::Result<()> {
     let output = Command::new("powershell")
         .args(&["-Command", command])

@@ -4,7 +4,8 @@ use crossterm::{
     execute,
     style::{Print, SetForegroundColor, Color, ResetColor},
 };
-use crate::utils::run_powershell_command;
+use crate::utils::run_powershell_command_with_output;
+use regex::Regex;
 
 pub struct ServiceManager {
     service_name: String,
@@ -81,7 +82,7 @@ impl ServiceManager {
             self.service_name
         );
 
-        match run_powershell_command(&command) {
+        match run_powershell_command_with_output(&command) {
             Ok(_) => {
                 execute!(
                     stdout,
@@ -118,7 +119,7 @@ impl ServiceManager {
 
         let command = "Start-Process 'powershell' -ArgumentList 'Stop-Process -Name \"winws\" -Force' -Verb RunAs";
 
-        match run_powershell_command(command) {
+        match run_powershell_command_with_output(command) {
             Ok(_) => {
                 execute!(
                     stdout,
@@ -158,7 +159,7 @@ impl ServiceManager {
             self.service_name
         );
 
-        match run_powershell_command(&command) {
+        match run_powershell_command_with_output(&command) {
             Ok(_) => {
                 execute!(
                     stdout,
@@ -193,22 +194,90 @@ impl ServiceManager {
         message_row += 1;
         stdout.flush()?;
 
-        let command = format!(
-            "Start-Process 'sc.exe' -ArgumentList 'create {} binPath= \"cmd.exe /c \"\"{}\"\"\" start= auto' -Verb RunAs",
-            self.service_name,
-            bat_file_path
+        // First, check if service exists
+        let check_command = format!(
+            "$service = Get-Service -Name '{}' -ErrorAction SilentlyContinue; if ($service) {{ Write-Output 'exists' }}",
+            self.service_name
         );
 
-        match run_powershell_command(&command) {
-            Ok(_) => {
+        if let Ok(output) = run_powershell_command_with_output(&check_command) {
+            if output.contains("exists") {
                 execute!(
                     stdout,
                     cursor::MoveTo(0, message_row as u16),
-                    SetForegroundColor(Color::Green),
-                    Print("✓ Служба успешно установлена.\n"),
+                    SetForegroundColor(Color::Yellow),
+                    Print("⚠ Служба уже существует. Попытка удаления...\n"),
                     ResetColor
                 )?;
-                message_row += 2; // Add extra line for spacing
+                message_row += 1;
+
+                // Try to remove existing service
+                let _ = self.remove_service(stdout, message_row)?;
+            }
+        }
+
+        // Create service with proper path escaping and validation
+        let create_command = format!(
+            r#"$process = Start-Process 'sc.exe' -ArgumentList 'create {} binPath= "cmd.exe /c \"{}\"" start= auto' -Verb RunAs -PassThru; $process.WaitForExit(); Write-Output $process.ExitCode"#,
+            format!("{}", self.service_name),
+            bat_file_path
+        );
+
+        match run_powershell_command_with_output(&create_command) {
+            Ok(output) => {
+                let re = Regex::new(r"\d+").unwrap();
+                let numbers: Vec<i32> = re
+                    .find_iter(&output)
+                    .filter_map(|digits| digits.as_str().parse::<i32>().ok())
+                    .collect();
+                let output_code: i32 = numbers[0];
+
+                if output_code == 0 {
+                    // success
+                    execute!(
+                        stdout,
+                        cursor::MoveTo(0, message_row as u16),
+                        SetForegroundColor(Color::Green),
+                        Print("✓ Служба успешно установлена.\n"),
+                        ResetColor
+                    )?;
+                } else if output_code == 5 {
+                    // access denied
+                    execute!(
+                        stdout,
+                        cursor::MoveTo(0, message_row as u16),
+                        SetForegroundColor(Color::Yellow),
+                        Print("⚠ В доступе отказано, не удалось установить службу.\n"),
+                        ResetColor
+                    )?;
+                } else if output_code == 740 {
+                    // elevation required
+                    execute!(
+                        stdout,
+                        cursor::MoveTo(0, message_row as u16),
+                        SetForegroundColor(Color::Yellow),
+                        Print("⚠ Требуется повышение прав, не удалось установить службу.\n"),
+                        ResetColor
+                    )?;
+                } else if output_code == 1073 {
+                    // service already installed
+                    execute!(
+                        stdout,
+                        cursor::MoveTo(0, message_row as u16),
+                        SetForegroundColor(Color::Yellow),
+                        Print("⚠ Служба уже установлена.\n"),
+                        ResetColor
+                    )?;
+                } else {
+                    execute!(
+                        stdout,
+                        cursor::MoveTo(0, message_row as u16),
+                        SetForegroundColor(Color::Red),
+                        Print(format!("⚠ Ошибка при установке службы: {}\n", output_code)),
+                        ResetColor
+                    )?;
+                }
+                message_row += 2;
             },
             Err(e) => {
                 execute!(
@@ -218,7 +287,7 @@ impl ServiceManager {
                     Print(format!("⚠ Ошибка при установке службы: {}\n", e)),
                     ResetColor
                 )?;
-                message_row += 2; // Add extra line for spacing
+                message_row += 2;
             }
         }
 
@@ -239,7 +308,7 @@ impl ServiceManager {
             self.service_name
         );
 
-        match run_powershell_command(&command) {
+        match run_powershell_command_with_output(&command) {
             Ok(_) => {
                 execute!(
                     stdout,
